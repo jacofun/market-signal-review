@@ -1,0 +1,61 @@
+name: Test and deploy market signal review FC
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: market-signal-review-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci --ignore-scripts --omit=dev
+      - run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+      - run: python -m pip install -r scripts/requirements.txt
+      - run: python -m unittest discover -s test -p 'test_*.py' -v
+      - name: Package and smoke-test the deployed entry point
+        run: |
+          python scripts/package.py
+          unzip -q dist/market-signal-review.zip -d "${RUNNER_TEMP}/market-review"
+          node --input-type=module - "${RUNNER_TEMP}/market-review/index.js" <<'JS'
+          import { pathToFileURL } from "node:url";
+          const { handler } = await import(pathToFileURL(process.argv[2]));
+          const result = await handler(Buffer.from('{"action":"health"}'), {});
+          if (result.status !== "ok" || result.nodeMajor !== 20 || result.codeVersion !== process.env.GITHUB_SHA) throw new Error("Packaged handler mismatch");
+          JS
+      - name: Deploy and verify review function and schedule
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALIYUN_FC_ACCESS_KEY_ID: ${{ secrets.ALIYUN_FC_ACCESS_KEY_ID }}
+          ALIYUN_FC_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_FC_ACCESS_KEY_SECRET }}
+          OSS_CONTENT_BUCKET: ${{ vars.OSS_CONTENT_BUCKET }}
+          OSS_CONTENT_REGION: ${{ vars.OSS_CONTENT_REGION }}
+          OSS_CONTENT_ENDPOINT: ${{ vars.OSS_CONTENT_ENDPOINT }}
+          PRIVATE_RESOURCE_ROOT: ${{ vars.PRIVATE_RESOURCE_ROOT }}
+          MARKET_REVIEW_ROLE_ARN: ${{ vars.MARKET_REVIEW_ROLE_ARN }}
+        run: |
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit is available. Skipping this deployment."
+            exit 0
+          fi
+          python scripts/deploy_fc.py
