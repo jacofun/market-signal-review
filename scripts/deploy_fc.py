@@ -210,9 +210,19 @@ def deploy(client, archive_lookup, package, commit, *, env=os.environ, sleep=tim
         sleep(5)
     else:
         raise DeployError("FC code checksum and active state did not converge.")
-    if (updated.runtime != RUNTIME or updated.handler != HANDLER or updated.timeout != timeout or
-            updated.instance_concurrency != 1 or not updated.internet_access or (updated.environment_variables or {}) != environment):
-        raise DeployError("Live runtime, handler, resources or environment did not match the deployment.")
+    checks = {
+        "runtime": updated.runtime == RUNTIME,
+        "handler": updated.handler == HANDLER,
+        "timeout": updated.timeout == timeout,
+        "instance_concurrency": updated.instance_concurrency in (None, 1),
+        "internet_access": updated.internet_access is not False,
+        "environment_variables": (updated.environment_variables or {}) == environment,
+    }
+    mismatches = [key for key, matches in checks.items() if not matches]
+    if mismatches:
+        log("review_config_mismatch", fields=mismatches, timeout=updated.timeout,
+            instanceConcurrency=updated.instance_concurrency, internetAccess=updated.internet_access)
+        raise DeployError(f"Live FC settings differ from the deployment ({', '.join(mismatches)}).")
     for key in PRESERVED_FIELDS:
         expected = (role or current.role) if key == "role" else codec(getattr(current, key, None))
         if codec(getattr(updated, key, None)) != expected:

@@ -93,6 +93,18 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(json.loads(target.triggers[0].trigger_config), fc.TRIGGER_CONFIG)
         self.assertEqual(target.trigger_updates, [])
 
+    def test_fc_may_omit_default_networking_and_concurrency(self):
+        target = FakeFC()
+        update = target.update_function_with_options
+        def without_defaults(*args):
+            update(*args)
+            target.function.instance_concurrency = None
+            target.function.internet_access = None
+        target.update_function_with_options = without_defaults
+        self.run_deploy(target)
+        self.assertEqual(target.invocations, ["health", "verify_dependencies"])
+        self.assertEqual(len(target.triggers), 1)
+
     def test_only_storage_config_is_inherited_and_explicit_role_is_assigned(self):
         target = FakeFC({"UNRELATED": "retain"})
         self.run_deploy(target, {"MARKET_REVIEW_ROLE_ARN": "acs:ram::123:role/review-oss"}, lookup=lambda: {
