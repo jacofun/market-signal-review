@@ -47,16 +47,39 @@ def crc64(data):
     return str(checksum ^ 0xFFFFFFFFFFFFFFFF)
 
 
+def error_details(error):
+    seen = set()
+    types = []
+    details = {}
+    while error and len(types) < 4 and id(error) not in seen:
+        seen.add(id(error))
+        types.append(type(error).__name__)
+        data = getattr(error, "data", None)
+        data = data if isinstance(data, dict) else {}
+        code = getattr(error, "code", None) or data.get("Code")
+        if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", code):
+            details.setdefault("code", code)
+        status = getattr(error, "status_code", None) or getattr(error, "statusCode", None) or data.get("statusCode")
+        if str(status).isdigit() and 100 <= int(status) <= 599:
+            details.setdefault("httpStatus", int(status))
+        request_id = data.get("RequestId") or data.get("requestId")
+        if isinstance(request_id, str) and re.fullmatch(r"[A-Fa-f0-9-]{16,64}", request_id):
+            details.setdefault("requestId", request_id)
+        error = getattr(error, "inner_exception", None) or error.__cause__ or error.__context__
+    return {"exceptionTypes": types, **details}
+
+
 def safe_code(error):
-    value = getattr(error, "code", None)
-    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", value) else "FC_API_ERROR"
+    return error_details(error).get("code", "FC_API_ERROR")
 
 
 def call(operation, method, *args):
     try:
         return method(*args)
     except Exception as error:
-        raise DeployError(f"{operation} failed ({safe_code(error)}).") from None
+        details = error_details(error)
+        log("fc_api_failed", operation=operation, **details)
+        raise DeployError(f"{operation} failed ({details.get('code', 'FC_API_ERROR')}).") from None
 
 
 def codec(value):
@@ -168,6 +191,8 @@ def deploy(client, archive_lookup, package, commit, *, env=os.environ, sleep=tim
     role = requested_role if requested_role and not current.role else None
     timeout = max(75, current.timeout or 0)
     checksum = crc64(package)
+    log("review_preflight", region=REGION, function=FUNCTION, roleConfigured=bool(role or current.role),
+        storageConfigured=all(environment.get(key) for key in STORAGE_KEYS[:2]), packageBytes=len(package))
     body = models.UpdateFunctionInput(
         runtime=RUNTIME, handler=HANDLER, timeout=timeout, internet_access=True, instance_concurrency=1,
         role=role, environment_variables=environment if environment != previous_env else None,

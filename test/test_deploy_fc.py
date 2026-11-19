@@ -64,6 +64,16 @@ class DeployTests(unittest.TestCase):
     def test_crc64(self):
         self.assertEqual(fc.crc64(b"123456789"), "11051210869376104954")
 
+    def test_sdk_diagnostics_keep_the_inner_status_and_skip_raw_text(self):
+        inner = RuntimeError("opaque request content")
+        inner.data = {"Code": "ServerBusy", "RequestId": "abc12345-6789-4321-9876-0123456789ab", "statusCode": 503}
+        outer = RuntimeError("opaque headers")
+        outer.inner_exception = inner
+        self.assertEqual(fc.error_details(outer), {
+            "exceptionTypes": ["RuntimeError", "RuntimeError"], "code": "ServerBusy",
+            "requestId": "abc12345-6789-4321-9876-0123456789ab", "httpStatus": 503,
+        })
+
     def test_existing_config_is_preserved_and_timer_is_idempotent(self):
         config = {"OSS_CONTENT_BUCKET": "own-bucket", "OSS_CONTENT_REGION": "oss-cn-beijing", "UNRELATED": "retain"}
         target = FakeFC(config, "existing-role")
